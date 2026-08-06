@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,21 +29,22 @@ import (
 )
 
 const (
-	acceptHeader           = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
-	acceptLanguageHeader   = "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-	aiRetryDelay           = 3 * time.Second
-	botRecruiterAnswer     = "Спасибо!\nВаши ответы отправлены работодателю. Если ваш отклик его заинтересует, он напишет в этом же чате или позвонит по номеру, который вы указали."
-	chatCompletionsPath    = "/v1/chat/completions"
-	defaultAIAttempts      = 2
-	defaultAIBaseURL       = "http://localhost:11434"
-	defaultAIModel         = "llama3:8b"
-	defaultAITimeout       = 45 * time.Second
-	defaultHost            = "hh.ru"
-	defaultGithubURL       = "https://github.com/s3rgeym"
-	defaultRequestInterval = 1200 * time.Millisecond
-	defaultWorkers         = 2
-	secCHUAHeader          = `"Chromium";v="149", "Google Chrome";v="149", "Not-A.Brand";v="99"`
-	userAgent              = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+	acceptHeader            = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+	acceptLanguageHeader    = "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+	aiRetryDelay            = 3 * time.Second
+	botRecruiterAnswer      = "Спасибо!\nВаши ответы отправлены работодателю. Если ваш отклик его заинтересует, он напишет в этом же чате или позвонит по номеру, который вы указали."
+	chatCompletionsPath     = "/v1/chat/completions"
+	defaultAIAttempts       = 2
+	defaultAIBaseURL        = "http://localhost:11434"
+	defaultAIConnectTimeout = 5 * time.Second
+	defaultAIModel          = "llama3:8b"
+	defaultAITimeout        = 30 * time.Second
+	defaultHost             = "hh.ru"
+	defaultGithubURL        = "https://github.com/s3rgeym"
+	defaultRequestInterval  = 1200 * time.Millisecond
+	defaultWorkers          = 2
+	secCHUAHeader           = `"Chromium";v="149", "Google Chrome";v="149", "Not-A.Brand";v="99"`
+	userAgent               = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
 )
 
 type LogLevel int
@@ -70,6 +72,7 @@ type Config struct {
 	AIModel                 string
 	AIAPIKey                string
 	AITimeout               time.Duration
+	AIConnectTimeout        time.Duration
 	AIAttempts              int
 	ExtraLetterPrompt       string
 	ExtraTestSolutionPrompt string
@@ -1554,7 +1557,7 @@ func NewHHAIResponder(ctx context.Context, cfg Config) (*HHAIResponder, error) {
 		client:                  client,
 		jar:                     jar,
 		resumeHash:              cfg.Resume,
-		ai:                      NewAIClient(ctx, cfg.AIBaseURL, cfg.AIModel, cfg.AIAPIKey, cfg.AITimeout, cfg.AIAttempts),
+		ai:                      NewAIClient(ctx, cfg.AIBaseURL, cfg.AIModel, cfg.AIAPIKey, cfg.AITimeout, cfg.AIConnectTimeout, cfg.AIAttempts),
 		extraLetterPrompt:       cfg.ExtraLetterPrompt,
 		extraTestSolutionPrompt: cfg.ExtraTestSolutionPrompt,
 		contacts:                cfg.Contacts,
@@ -1699,10 +1702,16 @@ func (r *HHAIResponder) XSRFToken() string {
 	return ""
 }
 
-func NewAIClient(ctx context.Context, baseURL, model, apiKey string, timeout time.Duration, attempts int) *AIClient {
+func NewAIClient(ctx context.Context, baseURL, model, apiKey string, timeout, connectTimeout time.Duration, attempts int) *AIClient {
 	if !strings.Contains(baseURL, "://") {
 		baseURL = "http://" + baseURL
 	}
+
+	// connectTimeout ограничивает только установку соединения, timeout весь запрос целиком
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = connectTimeout
+
 	return &AIClient{
 		ctx:      ctx,
 		baseURL:  strings.TrimRight(baseURL, "/"),
@@ -1710,7 +1719,8 @@ func NewAIClient(ctx context.Context, baseURL, model, apiKey string, timeout tim
 		apiKey:   apiKey,
 		attempts: attempts,
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: transport,
 		},
 	}
 }
@@ -2838,7 +2848,8 @@ func parseConfig() (Config, error) {
 	flag.IntVar(&cfg.MaxResponses, "mr", 0, "Пропускать вакансии с количеством откликов больше N")
 	flag.BoolVar(&cfg.ListResumes, "R", false, "Показать список резюме и выйти")
 	flag.BoolVar(&cfg.ForceLetter, "force-letter", false, "Всегда генерировать сопроводительное письмо")
-	flag.DurationVar(&cfg.AITimeout, "ai-timeout", defaultAITimeout, "Таймаут AI-запросов")
+	flag.DurationVar(&cfg.AITimeout, "ai-timeout", defaultAITimeout, "Общий таймаут AI-запроса: соединение и чтение ответа")
+	flag.DurationVar(&cfg.AIConnectTimeout, "ai-connect-timeout", defaultAIConnectTimeout, "Таймаут соединения с AI-сервером")
 	flag.DurationVar(&cfg.RequestInterval, "request-interval", defaultRequestInterval, "Минимальный интервал между запросами к hh.ru")
 	flag.IntVar(&cfg.AIAttempts, "ai-attempts", defaultAIAttempts, "Количество попыток отправить запрос к ИИ")
 	flag.StringVar(&cfg.AIAPIKey, "ai-api-key", "", "API-ключ AI")
@@ -2887,6 +2898,15 @@ func parseConfig() (Config, error) {
 
 	if cfg.AIAttempts < 1 {
 		return Config{}, errors.New("ai-attempts must be greater than 0")
+	}
+	if cfg.AITimeout <= 0 {
+		return Config{}, errors.New("ai-timeout must be greater than 0")
+	}
+	if cfg.AIConnectTimeout <= 0 {
+		return Config{}, errors.New("ai-connect-timeout must be greater than 0")
+	}
+	if cfg.AIConnectTimeout > cfg.AITimeout {
+		return Config{}, errors.New("ai-connect-timeout must not exceed ai-timeout")
 	}
 	if cfg.RequestInterval <= 0 {
 		return Config{}, errors.New("request-interval must be greater than 0")
