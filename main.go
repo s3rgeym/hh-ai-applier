@@ -1927,6 +1927,10 @@ func (r *HHAIResponder) LoadProfileData() error {
 
 	bodyText := string(resp.Body)
 
+	if strings.Contains(bodyText, "{&#34;") {
+		bodyText = html.UnescapeString(bodyText)
+	}
+
 	target := `{"redirectConfig":`
 	idx := strings.Index(bodyText, target)
 	if idx == -1 {
@@ -2194,6 +2198,10 @@ func (r *HHAIResponder) GetResumeExperience() (string, error) {
 
 	bodyText := string(resp.Body)
 
+	if strings.Contains(bodyText, "{&#34;") {
+		bodyText = html.UnescapeString(bodyText)
+	}
+
 	target := `{"redirectConfig":`
 	idx := strings.Index(bodyText, target)
 	if idx == -1 {
@@ -2269,6 +2277,10 @@ func (r *HHAIResponder) GetVacancyDescription(vacancyId int) (string, error) {
 	}
 
 	bodyText := string(resp.Body)
+
+	if strings.Contains(bodyText, "{&#34;") {
+		bodyText = html.UnescapeString(bodyText)
+	}
 
 	target := `{"redirectConfig":`
 	idx := strings.Index(bodyText, target)
