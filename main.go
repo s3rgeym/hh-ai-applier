@@ -43,8 +43,8 @@ const (
 	defaultGithubURL        = "https://github.com/s3rgeym"
 	defaultRequestInterval  = 1200 * time.Millisecond
 	defaultWorkers          = 2
-	secCHUAHeader           = `"Chromium";v="149", "Google Chrome";v="151", "Not-A.Brand";v="99"`
-	userAgent               = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
+	secCHUAHeader           = `"Chromium";v="151", "Google Chrome";v="151", "Not-A.Brand";v="99"`
+	userAgent               = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 )
 
 type LogLevel int
