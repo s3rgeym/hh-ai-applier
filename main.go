@@ -1364,6 +1364,14 @@ func NewHHRequester(ctx context.Context, client *http.Client, interval time.Dura
 	}
 }
 
+func cookieNames(req *http.Request) string {
+	names := make([]string, 0, len(req.Cookies()))
+	for _, c := range req.Cookies() {
+		names = append(names, c.Name)
+	}
+	return strings.Join(names, ",")
+}
+
 func (r *HHRequester) Do(req *http.Request) (*HHResponse, error) {
 	// Rate limiting
 	r.mu.Lock()
@@ -1396,7 +1404,11 @@ func (r *HHRequester) Do(req *http.Request) (*HHResponse, error) {
 		return nil, err
 	}
 
-	logger.Debug("%d %s %s", resp.StatusCode, req.Method, req.URL.String())
+	logger.Debug("REQ  %s %s cookies=[%s]", req.Method, req.URL.String(), cookieNames(req))
+	logger.Debug("RESP %d %s final_url=%s cookies=[%s]", resp.StatusCode, req.Method, resp.Request.URL.String(), cookieNames(resp.Request))
+	if resp.StatusCode == http.StatusForbidden {
+		logger.Debug("RESP 403 body prefix: %.300s", string(body))
+	}
 
 	return &HHResponse{
 		Status: resp.StatusCode,
@@ -1581,6 +1593,13 @@ func NewHHAIResponder(ctx context.Context, cfg Config) (*HHAIResponder, error) {
 	responder.eventWriter = out
 	responder.searchParams = searchParams
 
+	// If baseURL not provided via -u, resolve from redirect_host cookie for .hh.ru
+	if responder.baseURL == nil {
+		host := responder.getBaseHost()
+		responder.baseURL = &url.URL{Scheme: "https", Host: host}
+	}
+	logger.Debug("baseURL resolved to %s", responder.baseURL.String())
+
 	if err := responder.LoadProfileData(); err != nil {
 		return nil, err
 	}
@@ -1598,12 +1617,6 @@ func NewHHAIResponder(ctx context.Context, cfg Config) (*HHAIResponder, error) {
 	}
 
 	logger.Debug("Current resume hash=%s (%s)", responder.resumeHash, resume.Title)
-
-	// If baseURL not provided via -u, resolve from redirect_host cookie for .hh.ru
-	if responder.baseURL == nil {
-		host := responder.getBaseHost()
-		responder.baseURL = &url.URL{Scheme: "https", Host: host}
-	}
 
 	resumeExperience, err := responder.GetResumeExperience()
 	if err != nil {
@@ -1921,7 +1934,7 @@ func (r *HHAIResponder) LoadProfileData() error {
 		return err
 	}
 
-	req, err := r.buildRequest(http.MethodGet, "/applicant/resumes", nil, nil)
+	req, err := r.buildRequest(http.MethodGet, "/applicant/my_resumes", nil, nil)
 	if err != nil {
 		return err
 	}
@@ -1956,7 +1969,7 @@ func (r *HHAIResponder) LoadProfileData() error {
 			Attributes struct {
 				Id   string `json:"id"`
 				Hash string `json:"hash"`
-				//UserId string `json:"user"`
+				User string `json:"user"`
 			} `json:"_attributes"`
 			Title []struct {
 				String string `json:"string"`
@@ -2019,7 +2032,15 @@ func (r *HHAIResponder) LoadProfileData() error {
 	r.middleName = resumesData.Account.MiddleName
 	r.lastName = resumesData.Account.LastName
 	r.email = resumesData.Account.Email
-	r.userId = resumesData.UserNotifications[0].UserId
+	// The applicant's user id is no longer populated in userNotifications on the
+	// new /applicant/my_resumes page; it is available in each resume's _attributes.user.
+	if len(resumesData.UserNotifications) > 0 {
+		r.userId = resumesData.UserNotifications[0].UserId
+	} else if len(resumesData.ApplicantResumes) > 0 {
+		if id, err := strconv.ParseInt(resumesData.ApplicantResumes[0].Attributes.User, 10, 64); err == nil {
+			r.userId = id
+		}
+	}
 	r.chatURL = resumesData.Config.ExternalMicroFrontendHosts.Chatik
 	r.resumeProfileFrontURL = resumesData.Config.ExternalMicroFrontendHosts.ResumeProfileFront
 
@@ -2594,7 +2615,7 @@ func (r *HHAIResponder) TouchResume() (bool, error) {
 		"X-Xsrftoken":      token,
 		"X-Hhtmfrom":       "negotiation_list",
 		"X-Hhtmsource":     "resume_list",
-		"Referer":          r.ResolveURL("/applicant/resumes"),
+		"Referer":          r.ResolveURL("/applicant/my_resumes"),
 	}
 
 	req, err := r.buildRequest(http.MethodPost, "/applicant/resumes/touch", &body, headers)
@@ -2672,6 +2693,16 @@ func NewMemoryPersistentJar(cookiesPath string) (*MemoryPersistentJar, error) {
 		jar.cookies[domain] = append(jar.cookies[domain], cookie)
 	}
 
+	if logger != nil {
+		for domain, list := range jar.cookies {
+			var names []string
+			for _, c := range list {
+				names = append(names, c.Name)
+			}
+			logger.Debug("jar loaded %d cookie(s) domain=%s: [%s]", len(list), domain, strings.Join(names, ","))
+		}
+	}
+
 	return jar, scanner.Err()
 }
 
@@ -2733,9 +2764,12 @@ func (j *MemoryPersistentJar) Cookies(u *url.URL) []*http.Cookie {
 	changed := false
 
 	for domain, list := range j.cookies {
+		// Standard cookie domain semantics: a dot-prefixed domain like ".hh.ru"
+		// matches the bare host "hh.ru" and any subdomain "*.hh.ru".
+		domainNoDot := strings.TrimPrefix(domain, ".")
 		if domain == host ||
-			(strings.HasPrefix(domain, ".") && strings.HasSuffix(host, domain)) ||
-			strings.HasSuffix(host, "."+domain) {
+			host == domainNoDot ||
+			strings.HasSuffix(host, "."+domainNoDot) {
 
 			var active []*http.Cookie
 
