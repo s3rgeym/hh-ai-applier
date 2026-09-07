@@ -2435,8 +2435,14 @@ func (r *HHAIResponder) fetchVacancyPage(page int) ([]Vacancy, error) {
 		return nil, unexpectedHTTPStatus(resp.Status)
 	}
 
+	bodyText := string(resp.Body)
+
+	if strings.Contains(bodyText, "{&#34;") {
+		bodyText = html.UnescapeString(bodyText)
+	}
+
 	var vacancies []Vacancy
-	if err := decodeEmbeddedJSON(resp.Body, `,"vacancies":`, &vacancies); err != nil {
+	if err := decodeEmbeddedJSON(bodyText, `,"vacancies":`, &vacancies); err != nil {
 		return nil, err
 	}
 
