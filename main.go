@@ -2141,8 +2141,14 @@ func (r *HHAIResponder) GetVacancyTests(responseURL string) (map[string]VacancyT
 		return nil, unexpectedHTTPStatus(resp.Status)
 	}
 
+	bodyText := string(resp.Body)
+
+	if strings.Contains(bodyText, "{&#34;") {
+		bodyText = html.UnescapeString(bodyText)
+	}
+
 	var tests map[string]VacancyTest
-	if err := decodeEmbeddedJSON(resp.Body, `,"vacancyTests":`, &tests); err != nil {
+	if err := decodeEmbeddedJSON(bodyText, `,"vacancyTests":`, &tests); err != nil {
 		return nil, err
 	}
 
@@ -2869,14 +2875,14 @@ func (j *MemoryPersistentJar) saveLockedTo(path string) error {
 	return os.Rename(tmpPath, path)
 }
 
-func decodeEmbeddedJSON[T any](data []byte, marker string, out *T) error {
-	_, after, ok := bytes.Cut(data, []byte(marker))
+func decodeEmbeddedJSON[T any](data string, marker string, out *T) error {
+	_, after, ok := strings.Cut(data, marker)
 	if !ok {
 		return fmt.Errorf("marker %q not found in response", marker)
 	}
 
 	var raw json.RawMessage
-	decoder := json.NewDecoder(bytes.NewReader(after))
+	decoder := json.NewDecoder(strings.NewReader(after))
 	if err := decoder.Decode(&raw); err != nil {
 		return err
 	}
